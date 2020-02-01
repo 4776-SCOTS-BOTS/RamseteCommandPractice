@@ -20,6 +20,7 @@ import edu.wpi.first.wpilibj.controller.RamseteController;
 import edu.wpi.first.wpilibj.controller.SimpleMotorFeedforward;
 import edu.wpi.first.wpilibj.geometry.Pose2d;
 import edu.wpi.first.wpilibj.geometry.Rotation2d;
+import edu.wpi.first.wpilibj.geometry.Transform2d;
 import edu.wpi.first.wpilibj.geometry.Translation2d;
 import edu.wpi.first.wpilibj.kinematics.ChassisSpeeds;
 import edu.wpi.first.wpilibj.trajectory.Trajectory;
@@ -37,6 +38,8 @@ import frc.robot.subsystems.DriveSubsystem;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.RamseteCommand;
 import edu.wpi.first.wpilibj2.command.RunCommand;
+import edu.wpi.first.wpilibj2.command.SequentialCommandGroup;
+import edu.wpi.first.wpilibj2.command.WaitCommand;
 
 /**
  * This class is where the bulk of the robot should be declared. Since
@@ -111,9 +114,9 @@ public class RobotContainer {
         new TrajectoryConfig(AutoConstants.kMaxSpeedMetersPerSecond,
                              AutoConstants.kMaxAccelerationMetersPerSecondSquared)
             // Add kinematics to ensure max speed is actually obeyed
-            .setKinematics(DriveConstants.kDriveKinematics);
+            .setKinematics(DriveConstants.kDriveKinematics)
             // Apply the voltage constraint
-            //.addConstraint(autoVoltageConstraint)
+            .addConstraint(autoVoltageConstraint);
             //.addConstraint(turn);
 
     // An example trajectory to follow.  All units in meters.
@@ -141,10 +144,39 @@ public class RobotContainer {
         // Pass config
         config
     );
-    String file = "JustTurnLeft";
-    Trajectory jsonTrajectory = TrajectoryUtil.fromPathweaverJson(Paths.get(
+    Trajectory nonJSONTrajectory = TrajectoryGenerator.generateTrajectory(
+        new Pose2d(0, 0, new Rotation2d(0)),
+        List.of(
+            //new Translation2d(1, 0),
+            new Translation2d(0.75, 0.75)
+        ),
+        // End 3 meters straight ahead of where we started, facing forward
+        new Pose2d(1.5, 1.5, new Rotation2d(0, 3)),//new Rotation2d(Math.PI / 2)),
+        // Pass config
+        config
+    );
+
+    //Part one
+    String file = "one";
+    Trajectory PART1jsonTrajectory = TrajectoryUtil.fromPathweaverJson(Paths.get(
         "/home/lvuser/deploy/output/"+file+".wpilib.json"));
     System.out.println("Loaded file "+file+".wpilib.json");
+    //Part 2!!!!!
+    String PART2file = "two";
+    Trajectory PART2jsonTrajectory = TrajectoryUtil.fromPathweaverJson(Paths.get(
+        "/home/lvuser/deploy/output/"+PART2file+".wpilib.json"));
+    System.out.println("I ALSO::: Loaded file "+PART2file+".wpilib.json");
+/*
+    //Transformations:
+    Transform2d transform = m_robotDrive.getPose().minus(jsonTrajectory.getInitialPose());
+    Transform2d transform2 = m_robotDrive.getPose().minus(PART2jsonTrajectory.getInitialPose());
+    //Move the trajectories by the difference so that they start at the same position as the robot
+    Trajectory newTrajectory = jsonTrajectory.transformBy(transform);
+    Trajectory PART2trajectory = PART2jsonTrajectory.transformBy(transform2);
+*/
+    m_robotDrive.resetOdometry(PART1jsonTrajectory.getInitialPose());
+    
+    
     // Paste this variable in
     RamseteController disabledRamsete = new RamseteController() {
         @Override
@@ -156,7 +188,7 @@ public class RobotContainer {
     PIDController leftController = new PIDController(DriveConstants.kPDriveVel, 0, 0);
     PIDController rightController = new PIDController(DriveConstants.kPDriveVel, 0, 0);
     RamseteCommand rammand = new RamseteCommand(
-        jsonTrajectory, 
+        PART1jsonTrajectory, 
         m_robotDrive::getPose,
         new RamseteController(AutoConstants.kRamseteB, AutoConstants.kRamseteZeta),
         DriveConstants.kDriveKinematics,
@@ -172,7 +204,32 @@ public class RobotContainer {
         m_robotDrive
     );
     RamseteCommand ramseteCommand = new RamseteCommand(
-        jsonTrajectory,
+        PART1jsonTrajectory,
+        m_robotDrive::getPose,
+        //disabledRamsete,
+        new RamseteController(AutoConstants.kRamseteB, AutoConstants.kRamseteZeta),
+        new SimpleMotorFeedforward(DriveConstants.ksVolts,
+                                   DriveConstants.kvVoltSecondsPerMeter,
+                                   DriveConstants.kaVoltSecondsSquaredPerMeter),
+        DriveConstants.kDriveKinematics,
+        m_robotDrive::getWheelSpeeds,
+        leftController,
+        rightController,
+        //m_robotDrive::tankDriveVolts,
+    (leftVolts, rightVolts) -> {
+        m_robotDrive.tankDriveVolts(leftVolts, rightVolts);
+
+        leftMeasurement.setNumber(m_robotDrive.getWheelSpeeds().leftMetersPerSecond);
+        leftReference.setNumber(leftController.getSetpoint());
+
+        rightMeasurement.setNumber(m_robotDrive.getWheelSpeeds().rightMetersPerSecond);
+        rightReference.setNumber(rightController.getSetpoint());
+    },
+        m_robotDrive
+    );
+    
+    RamseteCommand PART2ramseteCommand = new RamseteCommand(
+        PART2jsonTrajectory,
         m_robotDrive::getPose,
         //disabledRamsete,
         new RamseteController(AutoConstants.kRamseteB, AutoConstants.kRamseteZeta),
@@ -197,7 +254,17 @@ public class RobotContainer {
     );
 
     // Run path following command, then stop at the end.
-    return ramseteCommand.andThen(() -> m_robotDrive.tankDriveVolts(0, 0));
+    Command wait = new WaitCommand(0).andThen(()->{
+        m_robotDrive.resetOdometry(PART1jsonTrajectory.getInitialPose());
+        System.out.println("P1 done. Me="+m_robotDrive.getPose()+", Part2Init="+PART1jsonTrajectory.getInitialPose()+".");
+        
+    });
+    Command full = new SequentialCommandGroup(
+        ramseteCommand.andThen(() -> m_robotDrive.tankDriveVolts(0, 0)),
+        wait,
+        PART2ramseteCommand.andThen(() -> m_robotDrive.tankDriveVolts(0, 0))
+    );
+    return full;
   }
   public static double deadzone(double x) {
       if (Math.abs(x) < 0.05) {
