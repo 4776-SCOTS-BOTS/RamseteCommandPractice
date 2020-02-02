@@ -14,6 +14,7 @@ import java.util.List;
 import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.wpilibj.GenericHID;
 import edu.wpi.first.wpilibj.SlewRateLimiter;
+import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj.XboxController;
 import edu.wpi.first.wpilibj.controller.PIDController;
 import edu.wpi.first.wpilibj.controller.RamseteController;
@@ -34,6 +35,7 @@ import edu.wpi.first.wpilibj.trajectory.constraint.TrajectoryConstraint;
 import frc.robot.Constants.AutoConstants;
 import frc.robot.Constants.DriveConstants;
 import frc.robot.Constants.OIConstants;
+import frc.robot.Tools.Pair;
 import frc.robot.subsystems.DriveSubsystem;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.RamseteCommand;
@@ -63,18 +65,21 @@ public class RobotContainer {
     public RobotContainer() {
         // Configure the button bindings
         configureButtonBindings();
-
         m_robotDrive.setDefaultCommand(
                 // A split-stick arcade command, with forward/backward controlled by the left
                 // hand, and turning controlled by the right.
                 new RunCommand(() -> {
-                    double xSpeed = -m_speedLimiter.calculate(deadzone(m_driverController.getY(GenericHID.Hand.kLeft)))
-                            * DriveConstants.kMaxSpeedMetersPerSecond;
-                    double rot = -m_rotLimiter.calculate(deadzone(m_driverController.getX(GenericHID.Hand.kRight)))
-                            * DriveConstants.kMaxAngularSpeedRadiansPerSecond;
-                    m_robotDrive.calculateArcadeDrive(xSpeed, rot);
-
-                }, m_robotDrive));
+                    m_robotDrive.curvatureDrive(-deadzone(m_driverController.getY(GenericHID.Hand.kLeft)), 
+                    deadzone(m_driverController.getX(GenericHID.Hand.kRight)),false,(left,right)->{
+                        double turn = (left - right)/2;
+                        double speed = right + (left-right)/2;
+                        double xSpeed = m_speedLimiter.calculate(speed)
+                                * DriveConstants.kMaxSpeedMetersPerSecond;
+                        double rot = -m_rotLimiter.calculate(turn)
+                                * DriveConstants.kMaxAngularSpeedRadiansPerSecond;
+                        m_robotDrive.calculateArcadeDrive(xSpeed, rot);
+                    });
+            }, m_robotDrive));
     }
 
     /**
@@ -92,7 +97,7 @@ public class RobotContainer {
      * @return the command to run in autonomous
      * @throws IOException
      */
-    public Command getAutonomousCommand() throws IOException {
+    public Command getDefaultRamseteAutonomousCommand() throws IOException {
         var table = NetworkTableInstance.getDefault().getTable("troubleshooting");
         var leftReference = table.getEntry("left_reference");
         var leftMeasurement = table.getEntry("left_measurement");
@@ -166,14 +171,14 @@ public class RobotContainer {
     Trajectory PART2jsonTrajectory = TrajectoryUtil.fromPathweaverJson(Paths.get(
         "/home/lvuser/deploy/output/"+PART2file+".wpilib.json"));
     System.out.println("I ALSO::: Loaded file "+PART2file+".wpilib.json");
-/*
+    /*
     //Transformations:
     Transform2d transform = m_robotDrive.getPose().minus(jsonTrajectory.getInitialPose());
     Transform2d transform2 = m_robotDrive.getPose().minus(PART2jsonTrajectory.getInitialPose());
     //Move the trajectories by the difference so that they start at the same position as the robot
     Trajectory newTrajectory = jsonTrajectory.transformBy(transform);
     Trajectory PART2trajectory = PART2jsonTrajectory.transformBy(transform2);
-*/
+    */
     m_robotDrive.resetOdometry(PART1jsonTrajectory.getInitialPose());
     
     
@@ -266,11 +271,41 @@ public class RobotContainer {
     );
     return full;
   }
-  public static double deadzone(double x) {
-      if (Math.abs(x) < 0.05) {
-          return 0;
-      } else {
-          return x;
-      }
+  
+  
+  public Command getAutonomousCommand() throws IOException {
+    return MultiRamseteCommands("one","two","three");
+  }
+
+  private SequentialCommandGroup MultiRamseteCommands(String... files) throws IOException {
+    SequentialCommandGroup c = new SequentialCommandGroup();
+    for (String s : files) {
+        var data = EasyRamseteCommand(s);
+        c.addCommands(data.getT1().beforeStarting(()->{
+            System.out.println("Command \'"+s+"\' is now running at "+data.getT2().getInitialPose());
+            m_robotDrive.resetOdometry(data.getT2().getInitialPose());
+        }, m_robotDrive));
+    }
+    return c;
+  }
+  private Pair<Command, Trajectory> EasyRamseteCommand(String file) throws IOException {
+    Trajectory jsonTrajectory = TrajectoryUtil.fromPathweaverJson(Paths.get(
+        "/home/lvuser/deploy/output/"+file+".wpilib.json"));
+    System.out.println("EasyRamseteCommand loaded \'"+file+"\' successfully.");
+    return new Pair<Command, Trajectory>(new RamseteCommand(
+        jsonTrajectory,
+        m_robotDrive::getPose,
+        //disabledRamsete,
+        new RamseteController(AutoConstants.kRamseteB, AutoConstants.kRamseteZeta),
+        new SimpleMotorFeedforward(DriveConstants.ksVolts,
+                                   DriveConstants.kvVoltSecondsPerMeter,
+                                   DriveConstants.kaVoltSecondsSquaredPerMeter),
+        DriveConstants.kDriveKinematics,
+        m_robotDrive::getWheelSpeeds,
+        new PIDController(DriveConstants.kPDriveVel, 0, 0),
+        new PIDController(DriveConstants.kPDriveVel, 0, 0),
+        m_robotDrive::tankDriveVolts,
+        m_robotDrive
+    ).andThen(() -> m_robotDrive.tankDriveVolts(0, 0)),jsonTrajectory);
   }
 }

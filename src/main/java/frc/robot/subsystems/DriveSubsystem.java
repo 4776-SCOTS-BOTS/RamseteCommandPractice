@@ -7,6 +7,8 @@
 
 package frc.robot.subsystems;
 
+import java.util.function.BiConsumer;
+
 import com.revrobotics.CANEncoder;
 import com.revrobotics.CANSparkMax;
 import com.revrobotics.CANSparkMax.IdleMode;
@@ -24,7 +26,8 @@ import edu.wpi.first.wpilibj.kinematics.DifferentialDriveOdometry;
 import edu.wpi.first.wpilibj.kinematics.DifferentialDriveWheelSpeeds;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
-
+import edu.wpi.first.wpiutil.math.MathUtil;
+import frc.robot.Tools;
 import frc.robot.Constants.DriveConstants;
 
 public class DriveSubsystem extends SubsystemBase {
@@ -68,7 +71,6 @@ public class DriveSubsystem extends SubsystemBase {
     m_rightEncoder.setPositionConversionFactor(DriveConstants.kRevolutionsToMeters);
     m_leftEncoder.setVelocityConversionFactor(DriveConstants.kRPMtoMetersPerSecond);
     m_rightEncoder.setVelocityConversionFactor(DriveConstants.kRPMtoMetersPerSecond);
-    System.out.println("pcr: "+m_rightEncoder.getPositionConversionFactor()+", VCF: "+m_rightEncoder.getVelocityConversionFactor());
     resetEncoders();
     m_odometry = new DifferentialDriveOdometry(Rotation2d.fromDegrees(getHeading()));
   
@@ -234,4 +236,68 @@ public class DriveSubsystem extends SubsystemBase {
       m_leftEncoder.getVelocity(), -m_rightEncoder.getVelocity(), l, r
     );
   }
+
+  public static final double kDefaultQuickStopThreshold = 0.2;
+  public static final double kDefaultQuickStopAlpha = 0.1;
+  public static final double kDefaultDeadband = 0.02;
+
+  private double m_quickStopThreshold = kDefaultQuickStopThreshold;
+  private double m_quickStopAlpha = kDefaultQuickStopAlpha;
+  private double m_quickStopAccumulator;
+  protected double m_deadband = kDefaultDeadband;
+  public void curvatureDrive(double xSpeed, double zRotation, boolean isQuickTurn, BiConsumer<Double, Double> output) {
+    xSpeed = MathUtil.clamp(xSpeed, -1.0, 1.0);
+    xSpeed = Tools.applyDeadband(xSpeed, m_deadband);
+    zRotation = MathUtil.clamp(zRotation, -1.0, 1.0);
+    zRotation = Tools.applyDeadband(zRotation, m_deadband);
+    double angularPower;
+    boolean overPower;
+    if (isQuickTurn) {
+      if (Math.abs(xSpeed) < m_quickStopThreshold) {
+        m_quickStopAccumulator = (1 - m_quickStopAlpha) * m_quickStopAccumulator
+            + m_quickStopAlpha * MathUtil.clamp(zRotation, -1.0, 1.0) * 2;
+      }
+      overPower = true;
+      angularPower = zRotation;
+    } else {
+      overPower = false;
+      angularPower = Math.abs(xSpeed) * zRotation - m_quickStopAccumulator;
+
+      if (m_quickStopAccumulator > 1) {
+        m_quickStopAccumulator -= 1;
+      } else if (m_quickStopAccumulator < -1) {
+        m_quickStopAccumulator += 1;
+      } else {
+        m_quickStopAccumulator = 0.0;
+      }
+    }
+
+    double leftMotorOutput = xSpeed + angularPower;
+    double rightMotorOutput = xSpeed - angularPower;
+
+    // If rotation is overpowered, reduce both outputs to within acceptable range
+    if (overPower) {
+      if (leftMotorOutput > 1.0) {
+        rightMotorOutput -= leftMotorOutput - 1.0;
+        leftMotorOutput = 1.0;
+      } else if (rightMotorOutput > 1.0) {
+        leftMotorOutput -= rightMotorOutput - 1.0;
+        rightMotorOutput = 1.0;
+      } else if (leftMotorOutput < -1.0) {
+        rightMotorOutput -= leftMotorOutput + 1.0;
+        leftMotorOutput = -1.0;
+      } else if (rightMotorOutput < -1.0) {
+        leftMotorOutput -= rightMotorOutput + 1.0;
+        rightMotorOutput = -1.0;
+      }
+    }
+    // Normalize the wheel speeds
+    double maxMagnitude = Math.max(Math.abs(leftMotorOutput), Math.abs(rightMotorOutput));
+    if (maxMagnitude > 1.0) {
+      leftMotorOutput /= maxMagnitude;
+      rightMotorOutput /= maxMagnitude;
+    }
+    output.accept(leftMotorOutput, rightMotorOutput);
+  }
+  
 }
